@@ -12,6 +12,13 @@
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
+// Mark unused procedures on compilers where it is supported
+#if defined(__GNUC__) || defined(__clang__)
+#  define MAYBE_UNUSED __attribute__((unused))
+#else
+#  define MAYBE_UNUSED
+#endif
+
 // Toggle assertions on and off here
 #define DEBUG 1
 #if DEBUG

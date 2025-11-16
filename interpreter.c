@@ -407,7 +407,7 @@ static void scanner_scan_identifier(Scanner *s)
 
 	String text = string_substring(s->src, s->start_cursor, s->current_cursor);
 	Token_Kind kind = KIND_UNKNOWN;
-	for (size_t i = 0; i < sizeof(keywords); i++)
+	for (size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++)
 	{
 		Mapping kv = keywords[i];
 		if (strncmp(text.content, kv.k.content, MIN(text.length, kv.k.length)) == 0)
@@ -508,7 +508,7 @@ static void scanner_scan_token(Scanner *s)
 	}
 }
 
-static void scanner_print_scanner(Scanner *s)
+MAYBE_UNUSED static void scanner_print_scanner(Scanner *s)
 {
 	printf("------------------------------------------\n");
 	printf("Scanner:\n");
@@ -569,34 +569,22 @@ String file_read_to_buffer(Arena *arena, const char *filename)
 	return buffer;
 }
 
-Token_List scanner_scan_file(Arena *arena, const char *filename)
+void scanner_run_scanner(Scanner *s)
 {
-	/* Buffer file */
-	String src = file_read_to_buffer(arena, filename);
-	Scanner s = scanner_new(src, arena);
-	while (!scanner_is_at_end(&s))
-	{
-		s.start_cursor = s.current_cursor;
-		scanner_scan_token(&s);
+	while(!scanner_is_at_end(s)) {
+		s->start_cursor = s->current_cursor;
+		scanner_scan_token(s);
 	}
-	scanner_print_scanner(&s);
-	return s.tokens;
-}
-
-Scanner scanner_scan(Arena *arena, const char *filename)
-{
-	String src = file_read_to_buffer(arena, filename);
-	Scanner s = scanner_new(src, arena);
-	while (!scanner_is_at_end(&s))
-	{
-		s.start_cursor = s.current_cursor;
-		scanner_scan_token(&s);
-	}
-
 	// Add eof token
 	Token t = {.kind = KIND_END_OF_FILE};
-	token_list_push(s.arena, &s.tokens, t);
+	token_list_push(s->arena, &s->tokens, t);
+}
 
+Scanner scanner_scan_file(Arena *arena, const char *filename)
+{
+	String src = file_read_to_buffer(arena, filename);
+	Scanner s = scanner_new(src, arena);
+	scanner_run_scanner(&s);
 	return s;
 }
 
@@ -1198,7 +1186,7 @@ void interpreter_interpret_file(Arena *arena, const char *filename)
 	Value v;
 
 	p = arena_push(arena, sizeof(Parser), align_of(Parser));
-	p->scanner = scanner_scan(arena, filename);
+	p->scanner = scanner_scan_file(arena, filename);
 	p->pos = 0;
 
 	Expr *e = parse_expr(p);

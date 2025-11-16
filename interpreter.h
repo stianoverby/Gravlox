@@ -115,8 +115,8 @@ Token* token_list_get(Token_List *lst, size_t index);
 #define token_list_foreach(lst, curr) \
 	for ((curr) = (lst)->head; (curr) != NULL; (curr) = (curr)->next)
 
-Token_List scanner_scan_file(Arena* arena, const char* filename);
-Scanner scanner_scan(Arena* arena, const char* filename);
+void scanner_run_scanner(Scanner *s);
+Scanner scanner_scan_file(Arena* arena, const char* filename);
 
 void token_print_token(Token *t);
 const char *token_kind_str(Token_Kind kind);

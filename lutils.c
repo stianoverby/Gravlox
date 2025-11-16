@@ -80,9 +80,9 @@ String string_substring(String s1, size_t start, size_t end)
     String s2 = {0};
     panic_if_not(end   <= s1.length + 1);
     panic_if_not(start <= s1.length    );
-    panic_if_not(start <= end          );
+    panic_if_not(start < end           );
     s2.content = &s1.content[start];
-    s2.length = end - start;
+    s2.length = end - 1 - start;
     return s2;
 }
 
