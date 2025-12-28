@@ -1,5 +1,7 @@
 #include "interpreter.h"
 
+static Allocator global_allocator = {global_malloc, global_calloc, global_free, 0};
+
 Opinfo operator_table[] =
 { {KIND_STAR         , 70, ASSOC_LEFT}
 , {KIND_SLASH        , 70, ASSOC_LEFT}
@@ -88,48 +90,93 @@ static bool token_is_binary_op(Token_Kind k)
 	}
 }
 
-static Token_List token_list_new(void)
+static Token_Vector token_vector_new(void)
 {
-	Token_List lst;
-	lst.head = NULL;
-	lst.tail = NULL;
-	lst.length = 0;
-	return lst;
+	Token_Vector v;
+	v.content = NULL;
+	v.capacity = 0;
+	v.size = 0;
+	return v;
 }
 
-static void token_list_push(Arena *arena, Token_List *lst, Token t)
+static void token_vector_init(Allocator *allocator, Token_Vector *v)
 {
-	Token_Node *node = (Token_Node *)arena_push(
-		arena,
-		sizeof(Token_Node),
-		align_of(Token_Node));
-	node->token = t;
-	node->next = NULL;
+	size_t new_capacity;
 
-	if (lst->tail != NULL)
-	{
-		lst->tail->next = node;
-	}
-	else
-	{
-		lst->head = node;
-	}
+	new_capacity = sizeof(v->content) * (1UL << 10);
 
-	lst->tail = node;
-	lst->length++;
+	v->content = allocator->malloc(new_capacity, allocator->ctx);
+	panic_if_not(v->content != NULL);
+
+	v->capacity = new_capacity;
+	v->size = 0;
 }
 
-Token *token_list_get(Token_List *lst, size_t index)
-{
-	panic_if_not(index < lst->length && "index out of bounds");
 
-	Token_Node *curr = lst->head;
-	for (size_t i = 0; i < index && curr; i++)
-	{
-		curr = curr->next;
+static void token_vector_append(Allocator *a, Token_Vector *v, Token t)
+{
+	if(v->capacity < v->size + 1) {
+		Token *new = a->malloc(v->capacity * 2, a->ctx);
+		panic_if_not(new != NULL);
+
+		memcpy(new, v->content, v->capacity);
+		v->capacity = v->capacity * 2;
+
+		a->free(v->content, a->ctx);
+		v->content = new;
 	}
-	return &curr->token;
+	v->content[v->size++] = t;
 }
+
+static Token* token_vector_get(Token_Vector *v, unsigned int index)
+{
+	panic_if_not(v->size > index && "index out of bounds");
+	return &v->content[index];
+}
+
+static Statement_Ptr_Vector statement_vector_new(void)
+{
+	Statement_Ptr_Vector v;
+	v.content = NULL;
+	v.capacity = 0;
+	v.size = 0;
+	return v;
+}
+
+static void statement_vector_init(Allocator *allocator, Statement_Ptr_Vector *v)
+{
+	size_t new_capacity;
+
+	new_capacity = sizeof(v->content) * (1UL << 10);
+
+	v->content = allocator->malloc(new_capacity, allocator->ctx);
+	panic_if_not(v->content != NULL);
+
+	v->capacity = new_capacity;
+	v->size = 0;
+}
+
+static void statement_vector_append(Allocator *a, Statement_Ptr_Vector *v, Statement *s)
+{
+	if(v->capacity < v->size + 1) {
+		Statement **new = a->malloc(v->capacity * 2, a->ctx);
+		panic_if_not(new != NULL);
+
+		memcpy(new, v->content, v->capacity);
+		v->capacity = v->capacity * 2;
+
+		a->free(v->content, a->ctx);
+		v->content = new;
+	}
+	v->content[v->size++] = s;
+}
+
+static Statement* statement_vector_get(Statement_Ptr_Vector *v, unsigned int index)
+{
+	panic_if_not(v->size > index && "index out of bounds");
+	return v->content[index];
+}
+
 
 const char *token_kind_str(Token_Kind kind)
 {
@@ -228,11 +275,11 @@ void token_print_token(Token *t)
 	{
 	case KIND_IDENTIFIER:
 	case KIND_STRING:
-		printf(" .literal: %.*s", (int)t->literal.val.text.length, t->literal.val.text.content);
-		printf(" .literal_size: %ld", t->literal.val.text.length);
+		printf(" .literal: %.*s", (int)t->literal.as.text.length, t->literal.as.text.content);
+		printf(" .literal_size: %ld", t->literal.as.text.length);
 		break;
 	case KIND_NUMBER:
-		printf(" .literal: %f", t->literal.val.number);
+		printf(" .literal: %f", t->literal.as.number);
 		break;
 	default:
 		// Do nothing
@@ -245,7 +292,8 @@ static Scanner scanner_new(String src, Arena *arena)
 {
 	Scanner scanner;
 	scanner.src = src;
-	scanner.tokens = token_list_new();
+	scanner.tokens = token_vector_new();
+	token_vector_init(&global_allocator, &scanner.tokens);
 	scanner.start_cursor = 0;
 	scanner.current_cursor = 0;
 	scanner.beginning_of_line = 0;
@@ -253,6 +301,11 @@ static Scanner scanner_new(String src, Arena *arena)
 	scanner.had_error = false;
 	scanner.arena = arena;
 	return scanner;
+}
+
+static void scanner_destroy(Scanner *scanner)
+{
+	global_allocator.free(scanner->tokens.content, global_allocator.ctx);
 }
 
 static void scanner_report(Scanner *s, int line, const char *where, const char *message)
@@ -318,7 +371,7 @@ static void scanner_add_nonvalued_token(Scanner *s, Token_Kind kind)
 
 	s->start_cursor = s->current_cursor;
 
-	token_list_push(s->arena, &s->tokens, t);
+	token_vector_append(&global_allocator, &s->tokens, t);
 }
 
 static void scanner_add_valued_token(Scanner *s, Token_Kind kind, Value literal)
@@ -332,7 +385,7 @@ static void scanner_add_valued_token(Scanner *s, Token_Kind kind, Value literal)
 
 	s->start_cursor = s->current_cursor;
 
-	token_list_push(s->arena, &s->tokens, t);
+	token_vector_append(&global_allocator, &s->tokens, t);
 }
 
 static void scanner_skip_comment(Scanner *s)
@@ -363,8 +416,8 @@ static void scanner_scan_string(Scanner *s)
 	scanner_advance(s);
 
 	Value v = {0};
-	v.val.text = string_substring(s->src, s->start_cursor, s->current_cursor);
-	panic_if_not(v.val.text.length != 0 && "unable to scan string");
+	v.as.text = string_substring(s->src, s->start_cursor, s->current_cursor);
+	panic_if_not(v.as.text.length != 0 && "unable to scan string");
 
 	scanner_add_valued_token(s, KIND_STRING, v);
 }
@@ -391,8 +444,8 @@ static void scanner_scan_number(Scanner *s)
 		}
 	}
 	Value v = {0};
-	v.val.number = strtod(&s->src.content[s->start_cursor], NULL);
-	panic_if_not(v.val.number != HUGE_VAL && "unable to convert string to double");
+	v.as.number = strtod(&s->src.content[s->start_cursor], NULL);
+	panic_if_not(v.as.number != HUGE_VAL && "unable to convert string to double");
 	scanner_add_valued_token(s, KIND_NUMBER, v);
 }
 
@@ -416,6 +469,15 @@ static void scanner_scan_identifier(Scanner *s)
 			break;
 		}
 	}
+
+	if (kind == KIND_TRUE || kind == KIND_FALSE) {
+		Value v;
+		v.kind = VALUE_KIND_BOOLEAN;
+		v.as.boolean = (kind == KIND_TRUE) ? true : false;
+		scanner_add_valued_token(s, kind, v);
+		return;
+	}
+
 	if (kind == KIND_UNKNOWN)
 	{
 		kind = KIND_IDENTIFIER;
@@ -516,19 +578,18 @@ MAYBE_UNUSED static void scanner_print_scanner(Scanner *s)
 	string_print_raw(s->src);
 	printf("\n");
 	printf("  tokens:");
-	if (!s->tokens.length)
+	if (!s->tokens.size)
 	{
 		printf(" []\n");
 	}
 	else
 	{
-		Token_Node *curr;
 		printf(" [\n");
-		token_list_foreach(&s->tokens, curr)
+		for(unsigned int i = 0; i < s->tokens.size; i++)
 		{
 			printf("    ");
-			token_print_token(&curr->token);
-		};
+			token_print_token(&s->tokens.content[i]);
+		}
 		printf("  ]");
 	}
 	printf("\n");
@@ -577,7 +638,7 @@ void scanner_run_scanner(Scanner *s)
 	}
 	// Add eof token
 	Token t = {.kind = KIND_END_OF_FILE};
-	token_list_push(s->arena, &s->tokens, t);
+	token_vector_append(&global_allocator, &s->tokens, t);
 }
 
 Scanner scanner_scan_file(Arena *arena, const char *filename)
@@ -619,9 +680,14 @@ Parser parser_new(Scanner s)
 	return p;
 }
 
+void parser_destroy(Parser *p)
+{
+	scanner_destroy(&p->scanner);
+}
+
 static Token *parser_peek(Parser *p)
 {
-	return token_list_get(&p->scanner.tokens, p->pos);
+	return token_vector_get(&p->scanner.tokens, p->pos);
 }
 
 static bool parser_is_at_end(Parser *p)
@@ -632,13 +698,13 @@ static bool parser_is_at_end(Parser *p)
 static Token *parser_advance(Parser *p)
 {
 	return parser_is_at_end(p)
-			   ? token_list_get(&p->scanner.tokens, p->pos)
-			   : token_list_get(&p->scanner.tokens, p->pos++);
+			   ? token_vector_get(&p->scanner.tokens, p->pos)
+			   : token_vector_get(&p->scanner.tokens, p->pos++);
 }
 
 static Token *parser_previous(Parser *p)
 {
-	return token_list_get(&p->scanner.tokens, p->pos - 1);
+	return token_vector_get(&p->scanner.tokens, p->pos - 1);
 }
 
 static Token *parser_consume(Parser *p, Token_Kind k, String msg)
@@ -673,7 +739,7 @@ static Expr *parser_parse_primary_expr(Parser *p)
 		primary->token = t;
 
 		expr->kind = EXPR_PRIMARY;
-		expr->content.primary = primary;
+		expr->as.primary = primary;
 		return expr;
 	}
 	case KIND_LEFT_PAREN:
@@ -717,7 +783,7 @@ static Expr *parser_parse_unary_expr(Parser *p)
 			return NULL;
 		}
 		expr->kind = EXPR_UNARY;
-		expr->content.unary = unary;
+		expr->as.unary = unary;
 
 		return expr;
 	}
@@ -762,7 +828,7 @@ static Expr *parser_parse_binary_expr(Parser *p, size_t prev_precedence)
 			return NULL;
 		}
 		expr->kind = EXPR_BINARY;
-		expr->content.binary = binary;
+		expr->as.binary = binary;
 
 		left = expr;
 		t = parser_peek(p);
@@ -775,7 +841,48 @@ static Expr *parse_expr(Parser *p)
 	return parser_parse_binary_expr(p, 0);
 }
 
-__attribute__((unused)) static void parser_synchronize(Parser *p)
+static Expr *parse_stmt_print(Parser *p)
+{
+	panic_if_not(parser_advance(p)->kind == KIND_PRINT);
+	Expr *expr = parse_expr(p);
+	return expr;
+}
+
+static Expr *parse_stmt_expr(Parser *p)
+{
+	return parse_expr(p);
+}
+
+static Statement *parse_stmt(Parser *p)
+{
+	Statement *stmt = arena_push(p->scanner.arena, sizeof(Statement), align_of(Statement));
+	panic_if_not(stmt != NULL);
+
+	switch(parser_peek(p)->kind) {
+		case KIND_PRINT:
+			stmt->kind = STMT_PRINT;
+			stmt->as.expression = parse_stmt_print(p);
+			break;
+		default:
+			stmt->kind = STMT_EXPR;
+			stmt->as.expression = parse_stmt_expr(p);
+	}
+	return stmt;
+}
+
+static Statement_Ptr_Vector parse_stmts(Parser *p)
+{
+	Statement_Ptr_Vector v = statement_vector_new();
+	statement_vector_init(&global_allocator, &v);
+	while(!parser_is_at_end(p)) {
+		Statement *stmt = parse_stmt(p);
+		statement_vector_append(&global_allocator, &v, stmt);
+		panic_if_not(parser_advance(p)->kind == KIND_SEMICOLON);
+	}
+	return v;
+}
+
+MAYBE_UNUSED static void parser_synchronize(Parser *p)
 {
 	(void)parser_advance(p);
 	while (!parser_is_at_end(p))
@@ -811,10 +918,10 @@ void expr_print_primary(Primary_Expr *e, FILE *out)
 	switch (e->token->kind)
 	{
 	case KIND_NUMBER:
-		fprintf(out, "%f", e->token->literal.val.number);
+		fprintf(out, "%f", e->token->literal.as.number);
 		break;
 	case KIND_STRING:
-		fprintf(out, "%.*s", (int)e->token->literal.val.text.length, e->token->literal.val.text.content);
+		fprintf(out, "%.*s", (int)e->token->literal.as.text.length, e->token->literal.as.text.content);
 		break;
 	case KIND_TRUE:
 		fprintf(out, "true");
@@ -895,16 +1002,33 @@ void expr_print(Expr *e, FILE *out)
 	switch (e->kind)
 	{
 	case EXPR_PRIMARY:
-		expr_print_primary(e->content.primary, out);
+		expr_print_primary(e->as.primary, out);
 		break;
 	case EXPR_UNARY:
-		expr_print_unary(e->content.unary, out);
+		expr_print_unary(e->as.unary, out);
 		break;
 	case EXPR_BINARY:
-		expr_print_binary(e->content.binary, out);
+		expr_print_binary(e->as.binary, out);
 		break;
 	default:
 		panic_if_not(false && "expr has no type");
+	}
+}
+
+void stmt_print(Statement *stmt, FILE *out)
+{
+	switch (stmt->kind)
+	{
+	case STMT_PRINT:
+		fprintf(out, "print(");
+		expr_print(stmt->as.expression, out);
+		fprintf(out, ")");
+		break;
+	case STMT_EXPR:
+		expr_print(stmt->as.expression, out);
+		break;
+	default:
+		panic_if_not(false && "stmt has no type");
 	}
 }
 
@@ -916,13 +1040,13 @@ void value_print(Value *v, FILE *out)
 		fprintf(out, "NULL");
 		break;
 	case VALUE_KIND_STRING:
-		fprintf(out, "\"%.*s\"", (int)v->val.text.length, v->val.text.content);
+		fprintf(out, "%.*s", (int)v->as.text.length, v->as.text.content);
 		break;
 	case VALUE_KIND_NUMBER:
-		fprintf(out, "%lf", v->val.number);
+		fprintf(out, "%lf", v->as.number);
 		break;
 	case VALUE_KIND_BOOLEAN:
-		fprintf(out, "%s", (v->val.boolean) ? "true" : "false");
+		fprintf(out, "%s", (v->as.boolean) ? "true" : "false");
 		break;
 	default:
 		panic_if_not(false && "value has no type");
@@ -938,16 +1062,16 @@ Value interpreter_eval_primary(Primary_Expr *primary)
 	{
 	case KIND_NUMBER:
 		v.kind = VALUE_KIND_NUMBER;
-		v.val.number = primary->token->literal.val.number;
+		v.as.number = primary->token->literal.as.number;
 		break;
 	case KIND_STRING:
 		v.kind = VALUE_KIND_STRING;
-		v.val.text = primary->token->literal.val.text;
+		v.as.text = primary->token->literal.as.text;
 		break;
 	case KIND_TRUE:
 	case KIND_FALSE:
 		v.kind = VALUE_KIND_BOOLEAN;
-		v.val.boolean = primary->token->literal.val.boolean;
+		v.as.boolean = primary->token->literal.as.boolean;
 		break;
 	case KIND_NIL:
 		v.kind = VALUE_KIND_NULL;
@@ -1001,7 +1125,7 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '*' to be number");
 		}
 		result.kind = VALUE_KIND_NUMBER;
-		result.val.number = left.val.number * right.val.number;
+		result.as.number = left.as.number * right.as.number;
 		break;
 	case KIND_SLASH:
 		if (left.kind != VALUE_KIND_NUMBER)
@@ -1012,12 +1136,12 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 		{
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '/' to be number");
 		}
-		if (right.val.number == 0)
+		if (right.as.number == 0)
 		{
-			panic_if_not(right.val.number != VALUE_KIND_NUMBER && "divide by zero");
+			panic_if_not(right.as.number != VALUE_KIND_NUMBER && "divide by zero");
 		}
 		result.kind = VALUE_KIND_NUMBER;
-		result.val.number = left.val.number / right.val.number;
+		result.as.number = left.as.number / right.as.number;
 		break;
 	case KIND_PLUS:
 		if (left.kind != right.kind)
@@ -1027,12 +1151,12 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 		if (left.kind == VALUE_KIND_NUMBER)
 		{
 			result.kind = VALUE_KIND_NUMBER;
-			result.val.number = left.val.number + right.val.number;
+			result.as.number = left.as.number + right.as.number;
 		}
 		else if (left.kind == VALUE_KIND_STRING)
 		{
 			result.kind = VALUE_KIND_STRING;
-			result.val.text = string_concat(arena, left.val.text, right.val.text);
+			result.as.text = string_concat(arena, left.as.text, right.as.text);
 		}
 		else
 		{
@@ -1049,7 +1173,7 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '-' to be number");
 		}
 		result.kind = VALUE_KIND_NUMBER;
-		result.val.number = left.val.number - right.val.number;
+		result.as.number = left.as.number - right.as.number;
 		break;
 	case KIND_LESS:
 		if (left.kind != VALUE_KIND_NUMBER)
@@ -1061,7 +1185,7 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '<' to be number");
 		}
 		result.kind = VALUE_KIND_BOOLEAN;
-		result.val.boolean = left.val.number < right.val.number;
+		result.as.boolean = left.as.number < right.as.number;
 		break;
 	case KIND_LESS_EQUAL:
 		if (left.kind != VALUE_KIND_NUMBER)
@@ -1073,7 +1197,7 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '<=' to be number");
 		}
 		result.kind = VALUE_KIND_BOOLEAN;
-		result.val.boolean = left.val.number <= right.val.number;
+		result.as.boolean = left.as.number <= right.as.number;
 		break;
 	case KIND_GREATER_EQUAL:
 		if (left.kind != VALUE_KIND_NUMBER)
@@ -1085,7 +1209,7 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '>=' to be number");
 		}
 		result.kind = VALUE_KIND_BOOLEAN;
-		result.val.boolean = left.val.number >= right.val.number;
+		result.as.boolean = left.as.number >= right.as.number;
 		break;
 	case KIND_GREATER:
 		if (left.kind != VALUE_KIND_NUMBER)
@@ -1097,7 +1221,7 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 			panic_if_not(left.kind == VALUE_KIND_NUMBER && "expected rhs of '>' to be number");
 		}
 		result.kind = VALUE_KIND_BOOLEAN;
-		result.val.boolean = left.val.number > right.val.number;
+		result.as.boolean = left.as.number > right.as.number;
 		break;
 	case KIND_BANG_EQUAL:
 		if (left.kind != right.kind || left.kind == VALUE_KIND_NULL || right.kind == VALUE_KIND_NULL)
@@ -1107,22 +1231,22 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 		if (left.kind == VALUE_KIND_NULL || right.kind == VALUE_KIND_NULL)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = left.kind != right.kind;
+			result.as.boolean = left.kind != right.kind;
 		}
 		else if (left.kind == VALUE_KIND_NUMBER)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = left.val.number != right.val.number;
+			result.as.boolean = left.as.number != right.as.number;
 		}
 		else if (left.kind == VALUE_KIND_BOOLEAN)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = left.val.boolean != right.val.boolean;
+			result.as.boolean = left.as.boolean != right.as.boolean;
 		}
 		else if (left.kind == VALUE_KIND_STRING)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = !string_equals(left.val.text, right.val.text);
+			result.as.boolean = !string_equals(left.as.text, right.as.text);
 		}
 		else
 		{
@@ -1137,22 +1261,22 @@ Value interpreter_eval_binary(Arena *arena, Binary_Expr *expr)
 		if (left.kind == VALUE_KIND_NULL || right.kind == VALUE_KIND_NULL)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = left.kind == right.kind;
+			result.as.boolean = left.kind == right.kind;
 		}
 		else if (left.kind == VALUE_KIND_NUMBER)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = left.val.number == right.val.number;
+			result.as.boolean = left.as.number == right.as.number;
 		}
 		else if (left.kind == VALUE_KIND_BOOLEAN)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = left.val.boolean == right.val.boolean;
+			result.as.boolean = left.as.boolean == right.as.boolean;
 		}
 		else if (left.kind == VALUE_KIND_STRING)
 		{
 			result.kind = VALUE_KIND_BOOLEAN;
-			result.val.boolean = string_equals(left.val.text, right.val.text);
+			result.as.boolean = string_equals(left.as.text, right.as.text);
 		}
 		else
 		{
@@ -1170,11 +1294,50 @@ Value interpreter_eval_expr(Arena *arena, Expr *expr)
 	switch (expr->kind)
 	{
 	case EXPR_PRIMARY:
-		return interpreter_eval_primary(expr->content.primary);
+		return interpreter_eval_primary(expr->as.primary);
 	case EXPR_UNARY:
-		return interpreter_eval_unary(arena, expr->content.unary);
+		return interpreter_eval_unary(arena, expr->as.unary);
 	case EXPR_BINARY:
-		return interpreter_eval_binary(arena, expr->content.binary);
+		return interpreter_eval_binary(arena, expr->as.binary);
+	default:
+		panic_if_not(false && "expr has no type");
+	}
+}
+
+void interpreter_builtin_print(Value *v)
+{
+	switch(v->kind) {
+		case VALUE_KIND_BOOLEAN:
+		case VALUE_KIND_NULL:
+		case VALUE_KIND_NUMBER:
+			value_print(v, stdout);
+			break;
+		case VALUE_KIND_STRING:
+			if(v->as.text.length <= 2) {
+				fprintf(stdout, "\n");
+			} else {
+				fprintf(stdout, "%.*s\n", (int)v->as.text.length - 1, &v->as.text.content[1]);
+			}
+			break;
+		default:
+			panic_if_not(false && "value has no type");
+	}
+}
+
+Value interpreter_eval_stmt(Arena *arena, Statement *stmt)
+{
+	switch (stmt->kind)
+	{
+	case STMT_PRINT: {
+		Value v = interpreter_eval_expr(arena, stmt->as.expression);
+		value_print(&v, stdout);
+		fprintf(stdout, "\n");
+		v.kind = VALUE_KIND_NULL;
+		return v;
+	}
+	case STMT_EXPR: {
+		return interpreter_eval_expr(arena, stmt->as.expression);
+	}
 	default:
 		panic_if_not(false && "expr has no type");
 	}
@@ -1189,14 +1352,17 @@ void interpreter_interpret_file(Arena *arena, const char *filename)
 	p->scanner = scanner_scan_file(arena, filename);
 	p->pos = 0;
 
-	Expr *e = parse_expr(p);
-	panic_if_not(e != NULL && "unable to parse expr");
-	v = interpreter_eval_expr(arena, e);
-
-	// Pretty print the parsed expr
-	expr_print(e, stdout);
-	printf("\n");
-
-	value_print(&v, stdout);
-	printf("\n");
+	Statement_Ptr_Vector stms = parse_stmts(p);
+	for(unsigned int i = 0; i < stms.size; i++) {
+		Statement *stmt = statement_vector_get(&stms, i);
+		stmt_print(stmt, stdout);
+		printf("\n");
+		v = interpreter_eval_stmt(arena, stmt);
+		if(v.kind != VALUE_KIND_NULL) {
+			value_print(&v, stdout);
+			printf("\n");
+		}
+	}
+	global_allocator.free(stms.content, global_allocator.ctx);
+	parser_destroy(p);
 }

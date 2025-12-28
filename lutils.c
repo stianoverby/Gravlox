@@ -82,7 +82,7 @@ String string_substring(String s1, size_t start, size_t end)
     panic_if_not(start <= s1.length    );
     panic_if_not(start < end           );
     s2.content = &s1.content[start];
-    s2.length = end - 1 - start;
+    s2.length = end - start;
     return s2;
 }
 
@@ -141,4 +141,23 @@ void string_print_raw(String s)
         }
     }
     printf("\"");
+}
+
+
+void *global_malloc(size_t size, void *ctx)
+{
+    (void)ctx;
+    return malloc(size);
+}
+
+void *global_calloc(size_t nmemb, size_t size, void *ctx)
+{
+    (void)ctx;
+    return calloc(nmemb, size);
+}
+
+void global_free(void *ptr, void *ctx)
+{
+    (void)ctx;
+    free(ptr);
 }

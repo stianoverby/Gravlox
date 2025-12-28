@@ -64,7 +64,7 @@ struct value {
 		String text;
 		double number;
 		bool boolean;
-	} val;
+	} as;
 };
 
 typedef struct span Span;
@@ -83,26 +83,19 @@ struct token
 	size_t line;
 };
 
-typedef struct token_node Token_Node;
-struct token_node
+typedef struct token_vector Token_Vector;
+struct token_vector
 {
-	Token_Node *next;
-	Token token;
-};
-
-typedef struct token_list Token_List;
-struct token_list
-{
-	Token_Node *head;
-	Token_Node *tail;
-	size_t length;
+	Token *content;
+	size_t capacity;
+	size_t size;
 };
 
 typedef struct scanner Scanner;
 struct scanner
 {
 	String src;
-	Token_List tokens;
+	Token_Vector tokens;
 	size_t start_cursor;
 	size_t current_cursor;
 	size_t beginning_of_line;
@@ -110,10 +103,6 @@ struct scanner
 	bool had_error;
 	Arena *arena;
 };
-
-Token* token_list_get(Token_List *lst, size_t index);
-#define token_list_foreach(lst, curr) \
-	for ((curr) = (lst)->head; (curr) != NULL; (curr) = (curr)->next)
 
 void scanner_run_scanner(Scanner *s);
 Scanner scanner_scan_file(Arena* arena, const char* filename);
@@ -154,8 +143,46 @@ struct expr {
         Primary_Expr *primary;
         Unary_Expr   *unary;
         Binary_Expr  *binary;
-    } content;
+    } as;
 };
+
+enum stmt_kind
+{ STMT_EXPR
+, STMT_PRINT
+};
+
+typedef enum stmt_kind Stmt_Kind;
+
+typedef struct statement Statement;
+struct statement {
+	Stmt_Kind kind;
+	union {
+		Expr *expression;
+	} as;
+};
+
+enum decl_kind
+{ DECL_VAR
+, DECL_STMT
+};
+typedef enum decl_kind Decl_Kind;
+
+typedef struct declaration Declaration;
+struct declaration {
+	Decl_Kind kind;
+	union {
+		Statement statement;
+	} as;
+};
+
+typedef struct stmtptr_vector Statement_Ptr_Vector;
+struct stmtptr_vector
+{
+	Statement **content;
+	size_t capacity;
+	size_t size;
+};
+
 
 typedef struct parser Parser;
 struct parser {

@@ -49,6 +49,7 @@ struct arena
     size_t index;
 };
 
+#define KIBIBYTE 1ULL << 10
 #define GIBIBYTE 1ULL << 30
 #define ARENA_DEFAULT_CAPACITY 4ULL * GIBIBYTE
 
@@ -62,6 +63,20 @@ Arena arena_create(size_t capacity);
 void arena_release(Arena *a);
 void *arena_push(Arena *a, size_t size, size_t align);
 void *arena_push_zero(Arena *a, size_t size, size_t align);
+
+// Allocator
+typedef struct allocator Allocator;
+struct allocator
+{
+    void* (*malloc)(size_t,         void *ctx);
+    void* (*calloc)(size_t, size_t, void *ctx);
+    void  (*free  )(void *        , void *ctx);
+    void  *ctx;
+};
+
+void *global_malloc(size_t size, void *ctx);
+void *global_calloc(size_t nmemb, size_t size, void *ctx);
+void  global_free(void *, void *ctx);
 
 // String
 typedef struct string String;
